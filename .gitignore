@@ -1,0 +1,10 @@
+# 認証情報（公開不可）
+*.json
+
+# 一時ファイル
+*.pdf
+*.png
+__pycache__/
+*.pyc
+.DS_Store
+
