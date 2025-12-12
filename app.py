@@ -18,15 +18,47 @@ def get_credentials():
     """認証情報を取得・更新する"""
     creds = None
     if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        except Exception as e:
+            # 破損したトークンファイルを削除
+            if os.path.exists(TOKEN_FILE):
+                os.remove(TOKEN_FILE)
+            creds = None
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                # リフレッシュに失敗した場合は再認証が必要
+                st.warning(f"⚠️ トークンの更新に失敗しました。再認証が必要です。")
+                if os.path.exists(TOKEN_FILE):
+                    os.remove(TOKEN_FILE)
+                creds = None
+
+        if not creds:
+            # 新しい認証フローを開始
+            st.info("🔐 Googleアカウントでの認証が必要です。")
+            st.info("ターミナルに表示されるURLをブラウザで開いて認証を完了してください。")
+            st.info("または、自動的にブラウザが開く場合は、そこで認証を行ってください。")
+
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                # open_browser=Trueでブラウザを自動的に開く
+                creds = flow.run_local_server(port=0, open_browser=True)
+                with open(TOKEN_FILE, 'w') as token:
+                    token.write(creds.to_json())
+                st.success("✅ 認証が完了しました！")
+            except Exception as e:
+                error_msg = str(e)
+                if "invalid_grant" in error_msg.lower():
+                    st.error("❌ 認証エラー: トークンが期限切れまたは無効です。")
+                elif "FileNotFoundError" in error_msg or "credentials" in error_msg.lower():
+                    st.error(f"❌ エラー: {CREDENTIALS_FILE} ファイルが見つかりません。")
+                else:
+                    st.error(f"❌ 認証エラー: {error_msg}")
+                raise
     return creds
 
 def create_slides(uploaded_file, save_images):
@@ -129,6 +161,14 @@ st.set_page_config(page_title="PDF to Google Slides", page_icon="📊")
 st.title("📄 PDF to Google Slides Converter")
 st.markdown("NotebookLMなどで作成したPDFを、画像化してGoogleスライドに変換します。")
 
+# セッション状態の初期化
+if 'slide_url' not in st.session_state:
+    st.session_state.slide_url = None
+if 'zip_data' not in st.session_state:
+    st.session_state.zip_data = None
+if 'file_name' not in st.session_state:
+    st.session_state.file_name = None
+
 # ファイルアップロード
 uploaded_file = st.file_uploader("PDFファイルをここにドロップしてください", type="pdf")
 
@@ -137,23 +177,40 @@ save_images_option = st.checkbox("スライドごとの画像(PNG)もダウン�
 
 if uploaded_file is not None:
     if st.button("🚀 スライド作成を開始", type="primary"):
+        # 新しい変換を開始する場合は、以前の結果をクリア
+        st.session_state.slide_url = None
+        st.session_state.zip_data = None
+        st.session_state.file_name = None
+
         try:
             with st.spinner('変換中... コーヒーでも飲んでお待ちください ☕'):
                 slide_url, zip_data = create_slides(uploaded_file, save_images_option)
 
-            st.success("🎉 完了しました！")
-
-            # スライドへのリンク
-            st.markdown(f"### [🔗 Googleスライドを開く]({slide_url})")
-
-            # 画像ZIPダウンロードボタン
+            # 結果をセッション状態に保存
+            st.session_state.slide_url = slide_url
             if save_images_option:
-                st.download_button(
-                    label="📥 画像(ZIP)をダウンロード",
-                    data=zip_data.getvalue(),
-                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}_images.zip",
-                    mime="application/zip"
-                )
+                st.session_state.zip_data = zip_data
+            st.session_state.file_name = os.path.splitext(uploaded_file.name)[0]
+
+            st.success("🎉 完了しました！")
 
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
+
+# 変換結果を表示（セッション状態から取得）
+if st.session_state.slide_url:
+    st.divider()
+    st.markdown("### 📊 変換結果")
+
+    # スライドへのリンク
+    st.markdown(f"### [🔗 Googleスライドを開く]({st.session_state.slide_url})")
+
+    # 画像ZIPダウンロードボタン
+    if st.session_state.zip_data and save_images_option:
+        st.download_button(
+            label="📥 画像(ZIP)をダウンロード",
+            data=st.session_state.zip_data.getvalue(),
+            file_name=f"{st.session_state.file_name}_images.zip",
+            mime="application/zip",
+            key="download_zip"
+        )
